@@ -1,0 +1,59 @@
+
+target C {
+  platform: {
+    name: "rp2040",
+    board: "pololu_3pi_2040_robot"
+  },
+  single-threaded: true,
+  keepalive: true
+}
+
+preamble {=
+  #include <stdio.h>
+  #include <pico/stdlib.h>
+  #include <hardware/gpio.h>
+=}
+
+main reactor {
+  preamble {=
+    static void* action;
+
+    void button_callback(uint gpio, uint32_t events) {
+      lf_schedule(action, 0);
+    }
+  =}
+
+  physical action a
+
+  state previous_time: instant_t = 0
+  state first_press: bool = true
+
+  reaction(startup) -> a {=
+    action = a;
+
+    gpio_init(25);
+    gpio_set_dir(25, GPIO_IN);
+    gpio_pull_up(25);
+
+    gpio_set_irq_enabled_with_callback(
+      25,
+      GPIO_IRQ_EDGE_FALL,
+      true,
+      button_callback
+    );
+  =}
+
+  reaction(a) {=
+    instant_t current_time = lf_time_logical();
+
+    if (!self->first_press) {
+      double elapsed_ms =
+        (current_time - self->previous_time) / 1000000.0;
+
+      printf("Time since last press: %.2f ms\n", elapsed_ms);
+    }
+
+    self->previous_time = current_time;
+    self->first_press = false;
+  =}
+}

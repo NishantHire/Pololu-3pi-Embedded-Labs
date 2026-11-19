@@ -1,0 +1,646 @@
+target C {
+  platform: {
+    name: "rp2040",
+    board: "pololu_3pi_2040_robot"
+  },
+  single-threaded: true
+}
+
+import Line, Display, Encoders, Accelerometer,
+       GyroAngle, MotorsWithFeedback from <pololu-3pi-c>
+
+import Tilt from "lib/Tilt.lf"
+
+preamble {=
+  #include <stdio.h>
+  #include <math.h>
+
+  #define DARK_THRESHOLD 500
+
+  // Desired wheel speeds in meters per second.
+  #define CLIMB_SPEED 0.10f
+  #define DESCEND_SPEED 0.08f
+  #define BACK_SPEED 0.08f
+  #define TURN_SPEED 0.07f
+
+  // Reduce feedback strength to prevent oversteering.
+  #define ROLL_GAIN 0.0005f
+  #define MAX_CORRECTION 0.01f
+
+  // Right-wheel compensation because the robot curves right.
+  #define LEFT_MOTOR_TRIM 0.00f
+  #define RIGHT_MOTOR_TRIM 0.00f
+
+  // Pitch thresholds in degrees.
+  #define SLOPE_THRESHOLD 7.0f
+  #define LEVEL_THRESHOLD 4.0f
+
+  // 20 samples at 50 ms is approximately one second.
+  #define REQUIRED_LEVEL_SAMPLES 20
+
+  // Gyroscope angle used for the turnaround.
+  #define TURNAROUND_ANGLE 160.0f
+
+  static float clamp_value(
+      float value,
+      float minimum,
+      float maximum
+  ) {
+    if (value < minimum) {
+      return minimum;
+    }
+
+    if (value > maximum) {
+      return maximum;
+    }
+
+    return value;
+  }
+=}
+
+main reactor {
+  line = new Line()
+  display = new Display()
+  encoders = new Encoders()
+  accelerometer = new Accelerometer()
+  gyro = new GyroAngle()
+  tilt = new Tilt()
+  motors = new MotorsWithFeedback()
+
+  // Sample all sensors every 50 milliseconds.
+  timer sample(0, 50 ms)
+
+  state calibration_count: int = 0
+
+  state seen_up_slope: bool = false
+  state seen_down_slope: bool = false
+
+  state top_level_count: int = 0
+  state bottom_level_count: int = 0
+
+  // 1 means turn right and -1 means turn left.
+  state turn_direction: int = 1
+  state center_direction: int = 1
+
+  state start_heading: float = 0
+  state heading_initialized: bool = false
+
+  // Send encoder readings to the feedback controller.
+  encoders.left -> motors.left
+  encoders.right -> motors.right
+
+  // Convert accelerometer readings into pitch and roll.
+  accelerometer.x -> tilt.x
+  accelerometer.y -> tilt.y
+  accelerometer.z -> tilt.z
+
+  reaction(sample) ->
+      line.trigger,
+      encoders.trigger,
+      accelerometer.trigger,
+      gyro.trigger {=
+
+    lf_set(line.trigger, true);
+    lf_set(encoders.trigger, true);
+    lf_set(accelerometer.trigger, true);
+    lf_set(gyro.trigger, true);
+  =}
+
+  initial mode CALIBRATING {
+    timer calibration_seconds(0, 1 s)
+    timer calibration_done(10 s)
+
+    reaction(startup) ->
+        motors.left_speed,
+        motors.right_speed,
+        display.line0,
+        display.line1,
+        display.line2 {=
+
+      lf_set(motors.left_speed, 0.0f);
+      lf_set(motors.right_speed, 0.0f);
+
+      lf_set(display.line0, "CALIBRATING");
+      lf_set(display.line1, "Move over light");
+      lf_set(display.line2, "and dark areas");
+    =}
+
+    reaction(calibration_seconds) -> display.line3 {=
+      static char timer_text[17];
+
+      if (self->calibration_count < 10) {
+        snprintf(
+            timer_text,
+            sizeof(timer_text),
+            "Time: %d/10 s",
+            self->calibration_count
+        );
+
+        lf_set(display.line3, timer_text);
+        self->calibration_count++;
+      }
+    =}
+
+    reaction(calibration_done) ->
+        line.calibrate,
+        reset(CLIMBING),
+        motors.left_speed,
+        motors.right_speed,
+        display.line0,
+        display.line1,
+        display.line2,
+        display.line3 {=
+
+      lf_set(line.calibrate, false);
+
+      self->seen_up_slope = false;
+      self->top_level_count = 0;
+
+      lf_set(
+          motors.left_speed,
+          CLIMB_SPEED + LEFT_MOTOR_TRIM
+      );
+
+      lf_set(
+          motors.right_speed,
+          CLIMB_SPEED + RIGHT_MOTOR_TRIM
+      );
+
+      lf_set(display.line0, "CLIMBING");
+      lf_set(display.line1, "Pitch:");
+      lf_set(display.line2, "Roll:");
+      lf_set(display.line3, "READY");
+
+      lf_set_mode(CLIMBING);
+    =}
+  }
+
+  mode CLIMBING {
+    reaction(tilt.pitch, tilt.roll) ->
+        reset(TOP_PAUSE),
+        motors.left_speed,
+        motors.right_speed,
+        display.line0,
+        display.line1,
+        display.line2 {=
+
+      float pitch_value = tilt.pitch->value;
+      float roll_value = tilt.roll->value;
+
+      static char pitch_text[17];
+      static char roll_text[17];
+
+      snprintf(
+          pitch_text,
+          sizeof(pitch_text),
+          "Pitch: %.1f",
+          pitch_value
+      );
+
+      snprintf(
+          roll_text,
+          sizeof(roll_text),
+          "Roll: %.1f",
+          roll_value
+      );
+
+      lf_set(display.line1, pitch_text);
+      lf_set(display.line2, roll_text);
+
+      // Record that the robot entered the upward slope.
+      if (pitch_value > SLOPE_THRESHOLD) {
+        self->seen_up_slope = true;
+        self->top_level_count = 0;
+      }
+
+      // Detect the flat platform after the upward slope.
+      if (
+          self->seen_up_slope &&
+          fabsf(pitch_value) < LEVEL_THRESHOLD
+      ) {
+        self->top_level_count++;
+      } else if (self->seen_up_slope) {
+        self->top_level_count = 0;
+      }
+
+      if (
+          self->seen_up_slope &&
+          self->top_level_count >= REQUIRED_LEVEL_SAMPLES
+      ) {
+        lf_set(motors.left_speed, 0.0f);
+        lf_set(motors.right_speed, 0.0f);
+
+        lf_set(display.line0, "TOP REACHED");
+        lf_set_mode(TOP_PAUSE);
+      } else {
+        // Adjust wheel speeds using roll feedback.
+        float correction =
+            ROLL_GAIN * roll_value;
+
+        correction = clamp_value(
+            correction,
+            -MAX_CORRECTION,
+            MAX_CORRECTION
+        );
+
+        float left_speed =
+            CLIMB_SPEED +
+            LEFT_MOTOR_TRIM +
+            correction;
+
+        float right_speed =
+            CLIMB_SPEED +
+            RIGHT_MOTOR_TRIM -
+            correction;
+
+        left_speed = clamp_value(
+            left_speed,
+            0.04f,
+            0.16f
+        );
+
+        right_speed = clamp_value(
+            right_speed,
+            0.04f,
+            0.16f
+        );
+
+        lf_set(motors.left_speed, left_speed);
+        lf_set(motors.right_speed, right_speed);
+      }
+    =}
+
+    reaction(line.reflect) ->
+        reset(BACKING_UP),
+        motors.left_speed,
+        motors.right_speed,
+        display.line0,
+        display.line1 {=
+
+      bool left_edge =
+          line.reflect->value[0] > DARK_THRESHOLD ||
+          line.reflect->value[1] > DARK_THRESHOLD;
+
+      bool center_edge =
+          line.reflect->value[2] > DARK_THRESHOLD;
+
+      bool right_edge =
+          line.reflect->value[3] > DARK_THRESHOLD ||
+          line.reflect->value[4] > DARK_THRESHOLD;
+
+      if (left_edge || center_edge || right_edge) {
+        if (center_edge || (left_edge && right_edge)) {
+          self->turn_direction = self->center_direction;
+          self->center_direction =
+              -self->center_direction;
+
+          lf_set(display.line1, "CENTER EDGE");
+        } else if (left_edge) {
+          self->turn_direction = 1;
+          lf_set(display.line1, "LEFT EDGE");
+        } else {
+          self->turn_direction = -1;
+          lf_set(display.line1, "RIGHT EDGE");
+        }
+
+        self->top_level_count = 0;
+
+        lf_set(
+            motors.left_speed,
+            -(BACK_SPEED + LEFT_MOTOR_TRIM)
+        );
+
+        lf_set(
+            motors.right_speed,
+            -(BACK_SPEED + RIGHT_MOTOR_TRIM)
+        );
+
+        lf_set(display.line0, "BACKING UP");
+        lf_set_mode(BACKING_UP);
+      }
+    =}
+  }
+
+  mode BACKING_UP {
+    timer backing_up_done(500 ms)
+
+    reaction(backing_up_done) ->
+        reset(TURNING_UP),
+        motors.left_speed,
+        motors.right_speed,
+        display.line0 {=
+
+      if (self->turn_direction == 1) {
+        lf_set(motors.left_speed, TURN_SPEED);
+        lf_set(motors.right_speed, -TURN_SPEED);
+        lf_set(display.line0, "TURNING RIGHT");
+      } else {
+        lf_set(motors.left_speed, -TURN_SPEED);
+        lf_set(motors.right_speed, TURN_SPEED);
+        lf_set(display.line0, "TURNING LEFT");
+      }
+
+      lf_set_mode(TURNING_UP);
+    =}
+  }
+
+  mode TURNING_UP {
+    timer turning_up_done(650 ms)
+
+    reaction(turning_up_done) ->
+        reset(CLIMBING),
+        motors.left_speed,
+        motors.right_speed,
+        display.line0 {=
+
+      lf_set(
+          motors.left_speed,
+          CLIMB_SPEED + LEFT_MOTOR_TRIM
+      );
+
+      lf_set(
+          motors.right_speed,
+          CLIMB_SPEED + RIGHT_MOTOR_TRIM
+      );
+
+      lf_set(display.line0, "CLIMBING");
+      lf_set_mode(CLIMBING);
+    =}
+  }
+
+  mode TOP_PAUSE {
+    timer top_pause_done(500 ms)
+
+    reaction(top_pause_done) ->
+        reset(TURNING_AROUND),
+        motors.left_speed,
+        motors.right_speed,
+        display.line0,
+        display.line1 {=
+
+      self->heading_initialized = false;
+
+      lf_set(motors.left_speed, -TURN_SPEED);
+      lf_set(motors.right_speed, TURN_SPEED);
+
+      lf_set(display.line0, "TURNING 180");
+      lf_set(display.line1, "");
+
+      lf_set_mode(TURNING_AROUND);
+    =}
+  }
+
+  mode TURNING_AROUND {
+    reaction(gyro.z) ->
+        reset(DESCENDING),
+        motors.left_speed,
+        motors.right_speed,
+        display.line0,
+        display.line1 {=
+
+      if (!self->heading_initialized) {
+        self->start_heading = gyro.z->value;
+        self->heading_initialized = true;
+      }
+
+      float turned_angle =
+          fabsf(gyro.z->value - self->start_heading);
+
+      static char angle_text[17];
+
+      snprintf(
+          angle_text,
+          sizeof(angle_text),
+          "Angle: %.0f",
+          turned_angle
+      );
+
+      lf_set(display.line1, angle_text);
+
+      if (turned_angle >= TURNAROUND_ANGLE) {
+        self->seen_down_slope = false;
+        self->bottom_level_count = 0;
+
+        lf_set(
+            motors.left_speed,
+            DESCEND_SPEED + LEFT_MOTOR_TRIM
+        );
+
+        lf_set(
+            motors.right_speed,
+            DESCEND_SPEED + RIGHT_MOTOR_TRIM
+        );
+
+        lf_set(display.line0, "DESCENDING");
+        lf_set(display.line1, "");
+
+        lf_set_mode(DESCENDING);
+      }
+    =}
+  }
+
+  mode DESCENDING {
+    reaction(tilt.pitch, tilt.roll) ->
+        reset(STOPPED),
+        motors.left_speed,
+        motors.right_speed,
+        display.line0,
+        display.line1,
+        display.line2 {=
+
+      float pitch_value = tilt.pitch->value;
+      float roll_value = tilt.roll->value;
+
+      static char pitch_text[17];
+      static char roll_text[17];
+
+      snprintf(
+          pitch_text,
+          sizeof(pitch_text),
+          "Pitch: %.1f",
+          pitch_value
+      );
+
+      snprintf(
+          roll_text,
+          sizeof(roll_text),
+          "Roll: %.1f",
+          roll_value
+      );
+
+      lf_set(display.line1, pitch_text);
+      lf_set(display.line2, roll_text);
+
+      // The pitch becomes negative while traveling downhill.
+      if (pitch_value < -SLOPE_THRESHOLD) {
+        self->seen_down_slope = true;
+        self->bottom_level_count = 0;
+      }
+
+      // Detect the flat surface at the bottom.
+      if (
+          self->seen_down_slope &&
+          fabsf(pitch_value) < LEVEL_THRESHOLD
+      ) {
+        self->bottom_level_count++;
+      } else if (self->seen_down_slope) {
+        self->bottom_level_count = 0;
+      }
+
+      if (
+          self->seen_down_slope &&
+          self->bottom_level_count >= REQUIRED_LEVEL_SAMPLES
+      ) {
+        lf_set(motors.left_speed, 0.0f);
+        lf_set(motors.right_speed, 0.0f);
+
+        lf_set(display.line0, "FINISHED");
+        lf_set_mode(STOPPED);
+      } else {
+        // Adjust wheel speeds using roll feedback.
+        float correction =
+            ROLL_GAIN * roll_value;
+
+        correction = clamp_value(
+            correction,
+            -MAX_CORRECTION,
+            MAX_CORRECTION
+        );
+
+        float left_speed =
+            DESCEND_SPEED +
+            LEFT_MOTOR_TRIM +
+            correction;
+
+        float right_speed =
+            DESCEND_SPEED +
+            RIGHT_MOTOR_TRIM -
+            correction;
+
+        left_speed = clamp_value(
+            left_speed,
+            0.03f,
+            0.14f
+        );
+
+        right_speed = clamp_value(
+            right_speed,
+            0.03f,
+            0.14f
+        );
+
+        lf_set(motors.left_speed, left_speed);
+        lf_set(motors.right_speed, right_speed);
+      }
+    =}
+
+    reaction(line.reflect) ->
+        reset(BACKING_DOWN),
+        motors.left_speed,
+        motors.right_speed,
+        display.line0,
+        display.line1 {=
+
+      bool left_edge =
+          line.reflect->value[0] > DARK_THRESHOLD ||
+          line.reflect->value[1] > DARK_THRESHOLD;
+
+      bool center_edge =
+          line.reflect->value[2] > DARK_THRESHOLD;
+
+      bool right_edge =
+          line.reflect->value[3] > DARK_THRESHOLD ||
+          line.reflect->value[4] > DARK_THRESHOLD;
+
+      if (left_edge || center_edge || right_edge) {
+        if (center_edge || (left_edge && right_edge)) {
+          self->turn_direction = self->center_direction;
+          self->center_direction =
+              -self->center_direction;
+
+          lf_set(display.line1, "CENTER EDGE");
+        } else if (left_edge) {
+          self->turn_direction = 1;
+          lf_set(display.line1, "LEFT EDGE");
+        } else {
+          self->turn_direction = -1;
+          lf_set(display.line1, "RIGHT EDGE");
+        }
+
+        self->bottom_level_count = 0;
+
+        lf_set(
+            motors.left_speed,
+            -(BACK_SPEED + LEFT_MOTOR_TRIM)
+        );
+
+        lf_set(
+            motors.right_speed,
+            -(BACK_SPEED + RIGHT_MOTOR_TRIM)
+        );
+
+        lf_set(display.line0, "BACKING UP");
+        lf_set_mode(BACKING_DOWN);
+      }
+    =}
+  }
+
+  mode BACKING_DOWN {
+    timer backing_down_done(500 ms)
+
+    reaction(backing_down_done) ->
+        reset(TURNING_DOWN),
+        motors.left_speed,
+        motors.right_speed,
+        display.line0 {=
+
+      if (self->turn_direction == 1) {
+        lf_set(motors.left_speed, TURN_SPEED);
+        lf_set(motors.right_speed, -TURN_SPEED);
+        lf_set(display.line0, "TURNING RIGHT");
+      } else {
+        lf_set(motors.left_speed, -TURN_SPEED);
+        lf_set(motors.right_speed, TURN_SPEED);
+        lf_set(display.line0, "TURNING LEFT");
+      }
+
+      lf_set_mode(TURNING_DOWN);
+    =}
+  }
+
+  mode TURNING_DOWN {
+    timer turning_down_done(650 ms)
+
+    reaction(turning_down_done) ->
+        reset(DESCENDING),
+        motors.left_speed,
+        motors.right_speed,
+        display.line0 {=
+
+      lf_set(
+          motors.left_speed,
+          DESCEND_SPEED + LEFT_MOTOR_TRIM
+      );
+
+      lf_set(
+          motors.right_speed,
+          DESCEND_SPEED + RIGHT_MOTOR_TRIM
+      );
+
+      lf_set(display.line0, "DESCENDING");
+      lf_set_mode(DESCENDING);
+    =}
+  }
+
+  mode STOPPED {
+    timer stopped_hold(0, 100 ms)
+
+    reaction(stopped_hold) ->
+        motors.left_speed,
+        motors.right_speed {=
+
+      lf_set(motors.left_speed, 0.0f);
+      lf_set(motors.right_speed, 0.0f);
+    =}
+  }
+}

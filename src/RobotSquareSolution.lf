@@ -1,0 +1,125 @@
+
+target C {
+  platform: {
+    name: "rp2040",
+    board: "pololu_3pi_2040_robot"
+  },
+  single-threaded: true
+}
+
+import Display, Motors, Encoders, GyroAngle from <pololu-3pi-c>
+
+preamble {=
+  #include <math.h>
+  #include <stdint.h>
+=}
+
+reactor Robot {
+  input left: int32_t
+  input right: int32_t
+  input heading: float
+
+  output left_power: float
+  output right_power: float
+  output notify: string
+
+  state start_left: int32_t = 0
+  state start_right: int32_t = 0
+  state start_heading: float = 0.0
+
+  state distance_initialized: bool = false
+  state heading_initialized: bool = false
+
+  initial mode DRIVING {
+
+    reaction(startup) -> left_power, right_power, notify {=
+      lf_set(left_power, 0.1f);
+      lf_set(right_power, 0.1f);
+      lf_set(notify, "DRIVING");
+    =}
+
+    reaction(left, right) ->
+        reset(TURNING),
+        left_power, right_power, notify {=
+
+      if (!self->distance_initialized) {
+        self->start_left = left->value;
+        self->start_right = right->value;
+        self->distance_initialized = true;
+      }
+
+      float left_degrees =
+          (float)(left->value - self->start_left);
+
+      float right_degrees =
+          (float)(right->value - self->start_right);
+
+      float average_degrees =
+          (left_degrees + right_degrees) / 2.0f;
+
+      float distance =
+          average_degrees * 3.14159265f
+          * 0.03175f / 360.0f;
+
+      if (distance >= 0.5f) {
+        self->heading_initialized = false;
+
+        lf_set_mode(TURNING);
+
+        lf_set(left_power, -0.1f);
+        lf_set(right_power, 0.1f);
+        lf_set(notify, "TURNING");
+      }
+    =}
+  }
+
+  mode TURNING {
+
+    reaction(heading) ->
+        reset(DRIVING),
+        left_power, right_power, notify {=
+
+      if (!self->heading_initialized) {
+        self->start_heading = heading->value;
+        self->heading_initialized = true;
+      }
+
+      float angle =
+          fabsf(heading->value - self->start_heading);
+
+      if (angle >= 90.0f) {
+        self->distance_initialized = false;
+
+        lf_set_mode(DRIVING);
+
+        lf_set(left_power, 0.1f);
+        lf_set(right_power, 0.1f);
+        lf_set(notify, "DRIVING");
+      }
+    =}
+  }
+}
+
+main reactor {
+  timer t(0, 20 ms)
+
+  robot = new Robot()
+  motors = new Motors()
+  encoders = new Encoders()
+  gyro = new GyroAngle()
+  display = new Display()
+
+  reaction(t) -> encoders.trigger, gyro.trigger {=
+    lf_set(encoders.trigger, true);
+    lf_set(gyro.trigger, true);
+  =}
+
+  encoders.left -> robot.left
+  encoders.right -> robot.right
+  gyro.z -> robot.heading
+
+  robot.left_power -> motors.left_power
+  robot.right_power -> motors.right_power
+
+  robot.notify -> display.line0
+}

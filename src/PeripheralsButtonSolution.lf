@@ -1,0 +1,50 @@
+target C {
+  platform: {
+    name: "rp2040",
+    board: "pololu_3pi_2040_robot"
+  },
+  single-threaded: true
+}
+
+import Display from <pololu-3pi-c/Display.lf>
+
+preamble {=
+  #include <stdint.h>
+  #include <stdio.h>
+  #include <pico/stdlib.h>
+  #include <hardware/gpio.h>
+=}
+
+main reactor {
+  d = new Display()
+  timer t(0, 250 ms)
+
+  reaction(startup) {=
+    gpio_init(PICO_DEFAULT_LED_PIN);
+    gpio_set_dir(PICO_DEFAULT_LED_PIN, GPIO_IN);
+  =}
+
+  reaction(t) -> d.line0, d.line1 {=
+    volatile uint32_t* gpio_input =
+        (volatile uint32_t*) 0xd0000004;
+
+    uint32_t mask = 1ul << PICO_DEFAULT_LED_PIN;
+
+    bool pin_is_high = (*gpio_input & mask) != 0;
+    bool button_pressed = !pin_is_high;
+
+    static char line0[17];
+    static char line1[17];
+
+    snprintf(line0, 17, "Button A:");
+    snprintf(
+        line1,
+        17,
+        "%s",
+        button_pressed ? "PRESSED" : "NOT PRESSED"
+    );
+
+    lf_set(d.line0, line0);
+    lf_set(d.line1, line1);
+  =}
+}

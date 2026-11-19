@@ -1,0 +1,187 @@
+target C {
+  platform: {
+    name: "rp2040",
+    board: "pololu_3pi_2040_robot"
+  },
+  single-threaded: true
+}
+
+import Line, Motors, Display from <pololu-3pi-c>
+
+preamble {=
+  #include <stdio.h>
+  #define DARK_THRESHOLD 500
+=}
+
+main reactor {
+  line = new Line()
+  motors = new Motors()
+  display = new Display()
+
+  // Continuously sample the line sensors.
+  timer sample(0, 100 ms)
+
+  state calibration_count: int = 0
+
+  // 1 means turn right and -1 means turn left.
+  state turn_direction: int = 1
+
+  // Alternate the direction when the center detects an edge.
+  state center_direction: int = 1
+
+  reaction(sample) -> line.trigger {=
+    lf_set(line.trigger, true);
+  =}
+
+  initial mode CALIBRATING {
+    timer seconds(0, 1 s)
+    timer calibration_done(10 s)
+
+    reaction(startup) ->
+        motors.left_power,
+        motors.right_power,
+        display.line0,
+        display.line1,
+        display.line2 {=
+
+      lf_set(motors.left_power, 0.0f);
+      lf_set(motors.right_power, 0.0f);
+
+      lf_set(display.line0, "CALIBRATING");
+      lf_set(display.line1, "Move over light");
+      lf_set(display.line2, "and dark areas");
+    =}
+
+    reaction(seconds) -> display.line3 {=
+      static char timer_text[17];
+
+      if (self->calibration_count < 10) {
+        snprintf(
+            timer_text,
+            sizeof(timer_text),
+            "Time: %d/10 s",
+            self->calibration_count
+        );
+
+        lf_set(display.line3, timer_text);
+        self->calibration_count++;
+      }
+    =}
+
+    reaction(calibration_done) ->
+        line.calibrate,
+        reset(DRIVING),
+        motors.left_power,
+        motors.right_power,
+        display.line0,
+        display.line1,
+        display.line2,
+        display.line3 {=
+
+      lf_set(line.calibrate, false);
+
+      lf_set(motors.left_power, 0.10f);
+      lf_set(motors.right_power, 0.10f);
+
+      lf_set(display.line0, "DRIVING");
+      lf_set(display.line1, "");
+      lf_set(display.line2, "");
+      lf_set(display.line3, "READY");
+
+      lf_set_mode(DRIVING);
+    =}
+  }
+
+  mode DRIVING {
+    reaction(line.reflect) ->
+        reset(BACKING),
+        motors.left_power,
+        motors.right_power,
+        display.line0,
+        display.line1 {=
+
+      bool left_edge =
+          line.reflect->value[0] > DARK_THRESHOLD ||
+          line.reflect->value[1] > DARK_THRESHOLD;
+
+      bool center_edge =
+          line.reflect->value[2] > DARK_THRESHOLD;
+
+      bool right_edge =
+          line.reflect->value[3] > DARK_THRESHOLD ||
+          line.reflect->value[4] > DARK_THRESHOLD;
+
+      if (left_edge || center_edge || right_edge) {
+
+        if (center_edge || (left_edge && right_edge)) {
+          self->turn_direction = self->center_direction;
+          self->center_direction =
+              -self->center_direction;
+
+          lf_set(display.line1, "CENTER EDGE");
+        } else if (left_edge) {
+          // Turn right after backing up.
+          self->turn_direction = 1;
+          lf_set(display.line1, "LEFT EDGE");
+        } else {
+          // Turn left after backing up.
+          self->turn_direction = -1;
+          lf_set(display.line1, "RIGHT EDGE");
+        }
+
+        lf_set(motors.left_power, -0.12f);
+        lf_set(motors.right_power, -0.12f);
+        lf_set(display.line0, "BACKING UP");
+
+        lf_set_mode(BACKING);
+      }
+    =}
+  }
+
+  mode BACKING {
+    // Back up for half a second.
+    timer backing_done(500 ms)
+
+    reaction(backing_done) ->
+        reset(TURNING),
+        motors.left_power,
+        motors.right_power,
+        display.line0 {=
+
+      if (self->turn_direction == 1) {
+        // Turn right.
+        lf_set(motors.left_power, 0.12f);
+        lf_set(motors.right_power, -0.12f);
+        lf_set(display.line0, "TURNING RIGHT");
+      } else {
+        // Turn left.
+        lf_set(motors.left_power, -0.12f);
+        lf_set(motors.right_power, 0.12f);
+        lf_set(display.line0, "TURNING LEFT");
+      }
+
+      lf_set_mode(TURNING);
+    =}
+  }
+
+  mode TURNING {
+    // Turn for approximately 650 milliseconds.
+    timer turning_done(650 ms)
+
+    reaction(turning_done) ->
+        reset(DRIVING),
+        motors.left_power,
+        motors.right_power,
+        display.line0,
+        display.line1 {=
+
+      lf_set(motors.left_power, 0.10f);
+      lf_set(motors.right_power, 0.10f);
+
+      lf_set(display.line0, "DRIVING");
+      lf_set(display.line1, "");
+
+      lf_set_mode(DRIVING);
+    =}
+  }
+}

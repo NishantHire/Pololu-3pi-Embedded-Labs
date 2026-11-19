@@ -1,0 +1,98 @@
+target C {
+  platform: {
+    name: "rp2040",
+    board: "pololu_3pi_2040_robot"
+  },
+  single-threaded: true,
+  keepalive: true
+}
+
+import Display from <pololu-3pi-c/Display.lf>
+
+preamble {=
+  #include <stdio.h>
+  #include <pico/stdlib.h>
+  #include <hardware/gpio.h>
+=}
+
+reactor Counter {
+  preamble {=
+    static void* action;
+    static instant_t last_press_time = 0;
+
+    void button_callback(uint gpio, uint32_t events) {
+      instant_t now = lf_time_physical();
+
+      if (now - last_press_time > 200000000LL) {
+        last_press_time = now;
+        lf_schedule(action, 0);
+      }
+    }
+  =}
+
+  physical action button
+  output count: int
+
+  state value: int = 0
+
+  reaction(startup) -> button {=
+    action = button;
+
+    gpio_init(25);
+    gpio_set_dir(25, GPIO_IN);
+    gpio_pull_up(25);
+
+    gpio_set_irq_enabled_with_callback(
+      25,
+      GPIO_IRQ_EDGE_FALL,
+      true,
+      button_callback
+    );
+  =}
+
+  initial mode CountUp {
+    timer tickUp(0, 500 msec)
+
+    reaction(tickUp) -> count {=
+      lf_set(count, self->value);
+      self->value++;
+    =}
+
+    reaction(button) -> reset(CountDown) {=
+      lf_set_mode(CountDown);
+    =}
+  }
+
+  mode CountDown {
+    timer tickDown(0, 1 sec)
+
+    reaction(tickDown) -> count {=
+      lf_set(count, self->value);
+      self->value--;
+    =}
+
+    reaction(button) -> reset(CountUp) {=
+      lf_set_mode(CountUp);
+    =}
+  }
+}
+
+main reactor {
+  counter = new Counter()
+  display = new Display()
+
+  reaction(counter.count) -> display.line0 {=
+    static char buffer[17];
+
+    snprintf(
+      buffer,
+      sizeof(buffer),
+      "Count: %d",
+      counter.count->value
+    );
+
+    lf_set(display.line0, buffer);
+
+    printf("Count: %d\n", counter.count->value);
+  =}
+}
