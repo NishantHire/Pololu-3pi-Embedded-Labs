@@ -66,7 +66,9 @@ flowchart TD
 
 `make test` compiles the **actual C math extracted from the LF sources**, checking tilt calculations and clamping with 17 numerical assertions. It does not compile LF or validate scheduling, sensor calibration, or motor behavior.
 
-I previously exercised the hill-climb program on my physical robot. A fresh full-project build and recorded hardware demonstration are still to be logged in [Validation](docs/VALIDATION.md). No exact turn accuracy or measured timing guarantee is claimed.
+On November 19, 2026, all 17 lab programs compiled on my Mac with `lfc 0.13.0`, and the host tests passed all 17 numerical assertions. The local `flake.lock` differed from the committed version; see [Validation](docs/VALIDATION.md) for the build record and its limits.
+
+I previously exercised the hill-climb program on my physical robot. A fresh recorded hardware demonstration is still pending. No exact turn accuracy or measured timing guarantee is claimed.
 
 ## Layout
 

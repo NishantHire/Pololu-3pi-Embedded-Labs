@@ -10,6 +10,8 @@ The adapter extracts `clamp_value` from the C preamble in `HillClimbSolution.lf`
 
 **2026-11-19:** passed on the Linux review host with six tilt cases and five clamp cases, totaling 17 numerical assertions. The harness uses C11, strict compiler warnings, and temporary files. It requires no Python packages.
 
+**2026-11-19, owner's Mac:** `make test` also passed all 17 numerical assertions, as confirmed by the owner's terminal output.
+
 These checks do not cover LF parsing/code generation, scheduling, interrupts, sensor noise, motor stability, or firmware timing.
 
 ## Firmware compilation
@@ -21,7 +23,22 @@ make doctor
 make build-all
 ```
 
-Record the source commit, `lfc --version`, toolchain version, OS, and result. Firmware compilation has **not** been performed on the remote review host because LF, Nix, CMake, and the ARM cross-compiler are unavailable there.
+### Owner's Mac, November 19, 2026
+
+| Item | Recorded evidence |
+| --- | --- |
+| Source revision | `54b6a73c6334f396dab18a18a97745ecee74d70f` on `portfolio-cleanup` |
+| Host | macOS; exact OS version not recorded |
+| Environment | Existing local development setup, after entering `nix develop` |
+| Lingua Franca | `lfc 0.13.0` |
+| Build | Owner ran `make build-all`; final program, `ToolsPrintfSolution`, reported successful compilation |
+| Artifacts | Owner's `ls -1 bin/*Solution.elf` output listed all 17 lab programs in the catalog |
+| Working tree | `git status --short` showed only a modified `flake.lock` |
+| Other tool versions | ARM compiler and CMake versions not yet recorded |
+
+This records a successful local compilation based on the owner's terminal output. The local lockfile change has not been inspected or committed, so this is not yet evidence of a clean-checkout build using the committed lockfile. Compilation does not establish runtime or physical robot correctness.
+
+Firmware compilation has not been performed on the remote review host because LF, Nix, CMake, and the ARM cross-compiler are unavailable there.
 
 ## Inherited emulator
 
