@@ -1,0 +1,95 @@
+target C {
+  platform: {
+    name: "rp2040",
+    board: "pololu_3pi_2040_robot"
+  },
+  single-threaded: true
+}
+
+import Line, Display from <pololu-3pi-c>
+
+preamble {=
+  #include <stdio.h>
+  #define DARK_THRESHOLD 500
+=}
+
+main reactor {
+  line = new Line()
+  display = new Display()
+
+  // Read the line sensors every 100 milliseconds.
+  timer sample(0, 100 ms)
+
+  // End calibration after 10 seconds.
+  timer end_calibration(10 s)
+
+  // Update the countdown every second.
+  timer seconds(0, 1 s)
+
+  // Number of completed calibration seconds.
+  state count: int = 0
+
+  reaction(startup) ->
+      display.line0,
+      display.line1,
+      display.line2 {=
+
+    lf_set(display.line0, "CALIBRATING");
+    lf_set(display.line1, "Move over light");
+    lf_set(display.line2, "and dark areas");
+  =}
+
+  // Display the calibration countdown.
+  reaction(seconds) -> display.line3 {=
+    static char timer_text[17];
+
+    if (self->count < 10) {
+      snprintf(
+          timer_text,
+          sizeof(timer_text),
+          "Time: %d/10 s",
+          self->count
+      );
+
+      lf_set(display.line3, timer_text);
+      self->count++;
+    } else if (self->count == 10) {
+      lf_set(display.line3, "READY");
+      self->count++;
+    }
+  =}
+
+  // Trigger a line-sensor reading.
+  reaction(sample) -> line.trigger {=
+    lf_set(line.trigger, true);
+  =}
+
+  // Stop calibration after 10 seconds.
+  reaction(end_calibration) -> line.calibrate {=
+    lf_set(line.calibrate, false);
+  =}
+
+  // Check which sensors detect the dark edge.
+  reaction(line.reflect) ->
+      display.line0,
+      display.line1,
+      display.line2 {=
+
+    bool left =
+        line.reflect->value[0] > DARK_THRESHOLD ||
+        line.reflect->value[1] > DARK_THRESHOLD;
+
+    bool center =
+        line.reflect->value[1] > DARK_THRESHOLD ||
+        line.reflect->value[2] > DARK_THRESHOLD ||
+        line.reflect->value[3] > DARK_THRESHOLD;
+
+    bool right =
+        line.reflect->value[3] > DARK_THRESHOLD ||
+        line.reflect->value[4] > DARK_THRESHOLD;
+
+    lf_set(display.line0, left ? "Left" : "");
+    lf_set(display.line1, center ? "Center" : "");
+    lf_set(display.line2, right ? "Right" : "");
+  =}
+}

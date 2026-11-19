@@ -1,0 +1,50 @@
+target C {
+  platform: "RP2040",
+  single-threaded: true
+}
+
+import Accelerometer from <pololu-3pi-c/IMU.lf>
+import Display from <pololu-3pi-c/Display.lf>
+import Tilt from "lib/Tilt.lf"
+
+preamble {=
+  #include <stdio.h>
+=}
+
+main reactor {
+  a = new Accelerometer()
+  tilt = new Tilt()
+  d = new Display()
+
+  timer t(0, 250 msec)
+
+  a.x -> tilt.x
+  a.y -> tilt.y
+  a.z -> tilt.z
+
+  reaction(t) -> a.trigger {=
+    lf_set(a.trigger, true);
+  =}
+
+  reaction(tilt.pitch, tilt.roll) -> d.line0, d.line1 {=
+    static char pitch_buffer[17];
+    static char roll_buffer[17];
+
+    snprintf(
+      pitch_buffer,
+      sizeof(pitch_buffer),
+      "P:%6.2f deg",
+      tilt.pitch->value
+    );
+
+    snprintf(
+      roll_buffer,
+      sizeof(roll_buffer),
+      "R:%6.2f deg",
+      tilt.roll->value
+    );
+
+    lf_set(d.line0, pitch_buffer);
+    lf_set(d.line1, roll_buffer);
+  =}
+}

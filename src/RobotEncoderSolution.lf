@@ -1,0 +1,72 @@
+
+target C {
+  platform: {
+    name: "rp2040",
+    board: "pololu_3pi_2040_robot"
+  },
+  single-threaded: true
+}
+
+import Display, Encoders from <pololu-3pi-c>
+
+// Convert encoder angle (degrees) into distance (meters).
+reactor AngleToDistance {
+  input angle: int32_t
+  output distance: float
+
+  state initial_angle: int = 0
+  state initialized: bool = false
+
+  reaction(angle) -> distance {=
+    if (!self->initialized) {
+      self->initial_angle = angle->value;
+      self->initialized = true;
+    }
+
+    double delta_angle =
+        (double)angle->value - self->initial_angle;
+
+    double wheel_diameter = 0.03175;
+    double pi = 3.141592653589793;
+
+    double meters =
+        (delta_angle / 360.0) * pi * wheel_diameter;
+
+    lf_set(distance, (float)meters);
+  =}
+}
+
+main reactor {
+  display = new Display()
+  encoder = new Encoders()
+
+  left_distance = new AngleToDistance()
+  right_distance = new AngleToDistance()
+
+  timer t(0, 1 s)
+
+  encoder.left -> left_distance.angle
+  encoder.right -> right_distance.angle
+
+  reaction(t) -> encoder.trigger {=
+    lf_set(encoder.trigger, true);
+  =}
+
+  reaction(startup) -> display.line0 {=
+    lf_set(display.line0, "DISTANCE (m):");
+  =}
+
+  reaction(left_distance.distance) -> display.line1 {=
+    static char buf[17];
+    snprintf(buf, sizeof(buf), "L: %.4f m",
+             left_distance.distance->value);
+    lf_set(display.line1, buf);
+  =}
+
+  reaction(right_distance.distance) -> display.line2 {=
+    static char buf[17];
+    snprintf(buf, sizeof(buf), "R: %.4f m",
+             right_distance.distance->value);
+    lf_set(display.line2, buf);
+  =}
+}

@@ -8,3 +8,13 @@ build/
 
 # MacOS junk
 .DS_Store
+
+# Emulator artifacts and local credentials
+test/*.hex
+test/*_out.txt
+test/results/
+__pycache__/
+.env
+.env.*
+!.env.example
+

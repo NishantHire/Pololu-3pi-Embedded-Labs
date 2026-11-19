@@ -1,0 +1,229 @@
+
+target C {
+  platform: {
+    name: "rp2040",
+    board: "pololu_3pi_2040_robot"
+  },
+  single-threaded: true
+}
+
+import Display, Motors, Encoders, GyroAngle, Bump from <pololu-3pi-c>
+
+preamble {=
+  #include <math.h>
+  #include <stdint.h>
+
+  #define WHEEL_DIAMETER 0.03175f
+  #define PI_VALUE 3.14159265f
+  #define DRIVE_DISTANCE 0.5f
+  #define BACK_DISTANCE 0.10f
+  #define CORNER_ANGLE 90.0f
+  #define AVOID_ANGLE 45.0f
+=}
+
+reactor Robot {
+  input left: int32_t
+  input right: int32_t
+  input heading: float
+  input bump_left: bool
+  input bump_right: bool
+
+  output left_power: float
+  output right_power: float
+  output notify: string
+
+  state start_left: int32_t = 0
+  state start_right: int32_t = 0
+  state start_heading: float = 0
+
+  state distance_initialized: bool = false
+  state heading_initialized: bool = false
+  state avoid_direction: int = 1
+
+  reaction(startup) -> left_power, right_power, notify {=
+    lf_set(left_power, 0.1f);
+    lf_set(right_power, 0.1f);
+    lf_set(notify, "DRIVING");
+  =}
+
+  initial mode DRIVING {
+
+    reaction(left, right) ->
+        reset(TURNING),
+        left_power, right_power, notify {=
+
+      if (!self->distance_initialized) {
+        self->start_left = left->value;
+        self->start_right = right->value;
+        self->distance_initialized = true;
+      }
+
+      float left_degrees =
+          (float)(left->value - self->start_left);
+      float right_degrees =
+          (float)(right->value - self->start_right);
+
+      float average_degrees =
+          (left_degrees + right_degrees) / 2.0f;
+
+      float distance =
+          average_degrees * PI_VALUE *
+          WHEEL_DIAMETER / 360.0f;
+
+      if (distance >= DRIVE_DISTANCE) {
+        self->heading_initialized = false;
+        lf_set_mode(TURNING);
+        lf_set(left_power, -0.1f);
+        lf_set(right_power, 0.1f);
+        lf_set(notify, "TURNING");
+      }
+    =}
+
+    reaction(bump_left, bump_right) ->
+        reset(BACKING),
+        left_power, right_power, notify {=
+
+      self->avoid_direction =
+          bump_left->is_present ? -1 : 1;
+
+      self->distance_initialized = false;
+
+      lf_set_mode(BACKING);
+      lf_set(left_power, -0.12f);
+      lf_set(right_power, -0.12f);
+      lf_set(notify, "BACKING");
+    =}
+  }
+
+  mode TURNING {
+
+    reaction(heading) ->
+        reset(DRIVING),
+        left_power, right_power, notify {=
+
+      if (!self->heading_initialized) {
+        self->start_heading = heading->value;
+        self->heading_initialized = true;
+      }
+
+      float angle =
+          fabsf(heading->value - self->start_heading);
+
+      if (angle >= CORNER_ANGLE) {
+        self->distance_initialized = false;
+        lf_set_mode(DRIVING);
+        lf_set(left_power, 0.1f);
+        lf_set(right_power, 0.1f);
+        lf_set(notify, "DRIVING");
+      }
+    =}
+
+    reaction(bump_left, bump_right) ->
+        reset(BACKING),
+        left_power, right_power, notify {=
+
+      self->avoid_direction =
+          bump_left->is_present ? -1 : 1;
+
+      self->distance_initialized = false;
+
+      lf_set_mode(BACKING);
+      lf_set(left_power, -0.12f);
+      lf_set(right_power, -0.12f);
+      lf_set(notify, "BACKING");
+    =}
+  }
+
+  mode BACKING {
+
+    reaction(left, right) ->
+        reset(AVOID_TURN),
+        left_power, right_power, notify {=
+
+      if (!self->distance_initialized) {
+        self->start_left = left->value;
+        self->start_right = right->value;
+        self->distance_initialized = true;
+      }
+
+      float left_degrees =
+          (float)(left->value - self->start_left);
+      float right_degrees =
+          (float)(right->value - self->start_right);
+
+      float average_degrees =
+          (left_degrees + right_degrees) / 2.0f;
+
+      float distance = fabsf(
+          average_degrees * PI_VALUE *
+          WHEEL_DIAMETER / 360.0f
+      );
+
+      if (distance >= BACK_DISTANCE) {
+        self->heading_initialized = false;
+
+        lf_set_mode(AVOID_TURN);
+
+        lf_set(left_power,
+               -0.1f * self->avoid_direction);
+        lf_set(right_power,
+               0.1f * self->avoid_direction);
+        lf_set(notify, "AVOID TURN");
+      }
+    =}
+  }
+
+  mode AVOID_TURN {
+
+    reaction(heading) ->
+        reset(DRIVING),
+        left_power, right_power, notify {=
+
+      if (!self->heading_initialized) {
+        self->start_heading = heading->value;
+        self->heading_initialized = true;
+      }
+
+      float angle =
+          fabsf(heading->value - self->start_heading);
+
+      if (angle >= AVOID_ANGLE) {
+        self->distance_initialized = false;
+
+        lf_set_mode(DRIVING);
+
+        lf_set(left_power, 0.1f);
+        lf_set(right_power, 0.1f);
+        lf_set(notify, "DRIVING");
+      }
+    =}
+  }
+}
+
+main reactor {
+  timer t(0, 20 ms)
+
+  robot = new Robot()
+  motors = new Motors()
+  encoders = new Encoders()
+  gyro = new GyroAngle()
+  bump = new Bump()
+  display = new Display()
+
+  reaction(t) -> encoders.trigger, gyro.trigger {=
+    lf_set(encoders.trigger, true);
+    lf_set(gyro.trigger, true);
+  =}
+
+  encoders.left -> robot.left
+  encoders.right -> robot.right
+  gyro.z -> robot.heading
+
+  bump.left -> robot.bump_left
+  bump.right -> robot.bump_right
+
+  robot.left_power -> motors.left_power
+  robot.right_power -> motors.right_power
+
+  robot.notify -> display.line0
+}
