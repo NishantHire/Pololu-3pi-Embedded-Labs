@@ -34,9 +34,12 @@ make build-all
 | Build | Owner ran `make build-all`; final program, `ToolsPrintfSolution`, reported successful compilation |
 | Artifacts | Owner's `ls -1 bin/*Solution.elf` output listed all 17 lab programs in the catalog |
 | Working tree | `git status --short` showed only a modified `flake.lock` |
-| Other tool versions | ARM compiler and CMake versions not yet recorded |
+| ARM compiler | Arm GNU Toolchain 14.2.Rel1, GCC `14.2.1 20241119` |
+| CMake | `3.31.6` |
+| Nix input | `nixos-25.05`, revision `ac62194c3917d5f474c1a844b6fd6da2db95077d` |
+| Lockfile follow-up | The tested local lockfile was committed and pushed as `0c82ea2114d4dd229594579c2f59024d3529ee8b`; the owner then reported a clean working tree |
 
-This records a successful local compilation based on the owner's terminal output. The local lockfile change has not been inspected or committed, so this is not yet evidence of a clean-checkout build using the committed lockfile. Compilation does not establish runtime or physical robot correctness.
+This records a successful local compilation based on the owner's terminal output. The lockfile diff was reviewed and the exact file used for the build is now committed, aligning it with the existing `nixos-25.05` input in `flake.nix`. The compilation preceded the lockfile commit; no LF source was changed by that commit. An independent fresh-checkout build has not been performed. Compilation does not establish runtime or physical robot correctness.
 
 Firmware compilation has not been performed on the remote review host because LF, Nix, CMake, and the ARM cross-compiler are unavailable there.
 

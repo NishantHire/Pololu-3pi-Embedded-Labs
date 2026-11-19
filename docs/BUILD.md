@@ -63,7 +63,7 @@ For serial output, identify the robot's current device path and connect with a t
 - Source and custom reactors belong in `src/` and `src/lib/`.
 - `include/` is generated and removed by the existing cleanup target; do not place custom source there.
 - Generated output, SDK downloads, emulator output, and local credentials should not be added as normal project files.
-- Review any local `flake.lock` changes before claiming a matching reproducible environment. An uncommitted lockfile change on the owner's Mac was not part of the uploaded source commit.
+- The Nix lockfile used for the successful Mac build is committed. Review future lockfile changes before committing them; recorded versions and validation limits are in [Validation](VALIDATION.md).
 
 ## References
 
